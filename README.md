@@ -1,6 +1,6 @@
 # Bulk Print
 
-Right-click one or more folders in Windows Explorer and print every Word, Excel, PowerPoint, PDF and email (`.eml`) file in them to the default printer.
+Right-click one or more folders in Windows Explorer and print every Word, Excel, PowerPoint, PDF, email (`.eml`) and image (`.jpg .jpeg .png`) file in them to the default printer. Images print in colour, 4 per page.
 
 ## Files
 
@@ -40,9 +40,10 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 
 ## What it does
 
-- Prints `.doc .docx .xls .xlsx .ppt .pptx .pdf .eml` in each selected folder, in name order. Subfolders are not included.
+- Prints `.doc .docx .xls .xlsx .ppt .pptx .pdf .eml .jpg .jpeg .png` in each selected folder, in name order. Subfolders are not included.
 - Emails print exactly as Outlook's Quick Print does: whole email, Memo Style, default printer. Each email briefly opens in Outlook (the script asks for the window to be minimised; whether it flashes on screen first is not verified) and closes again; Outlook itself is never closed. If Outlook was not running, it starts for each email (about 6 s each) and closes again afterwards.
 - If a folder contains ZIP files, asks once per folder whether to extract and print their supported contents.
+- Images (including any inside ZIPs) print together as one job at the end of each folder: landscape A4/Letter page, 2 x 2 grid, each image fitted to its quarter without stretching, file name underneath, colour requested. Phone photos are turned upright from their rotation tag; transparent areas print white. Images are shrunk to 300 dpi at their printed size so the job stays small. An unreadable image leaves a grey note in its place and is listed as failed.
 - Lists everything else as skipped. `.md` files (including triage `.eml.md` notes) are logged but left out of the on-screen summary.
 - Writes a log, `Bulk-Print-<date-time>.log`, into each folder it prints (skipped, with a warning, if the folder is read-only).
 - Ends with a summary: failed files in red, skipped files in yellow, each labelled with its folder.
@@ -56,6 +57,9 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - **Read-only folders** (some network shares) cannot hold the log. The script prints them anyway, with no log, and shows a yellow warning when it starts that folder and again in the end summary.
 - **Emails print in full** — there is no page limit; Outlook's scripting interface has no page range. Attachments inside an `.eml` are not printed (Outlook's default).
 - **An email is matched to its Outlook window by subject.** If Outlook shows the email under a different subject than the file's header (unusual encodings), it fails after 60 s rather than risk printing the wrong email.
+- **Images: HEIC** (iPhone's default format) **is not supported** and is listed as skipped. Set the iPhone to "Most Compatible" (JPEG) or convert first.
+- **Images: colour is requested, not guaranteed** — a black-and-white printer, or a driver that ignores the request, prints grey. A printer that reports no colour support gets a warning in the log.
+- **Images: portrait photos print smaller** than landscape ones, because the page is landscape and photos are never rotated to fit.
 - **Very large selections** may exceed the Windows command-line length limit for Send To. Not measured.
 - **Work PCs:** if the window flashes and closes, a Group Policy execution policy is probably blocking scripts. `-ExecutionPolicy Bypass` does not override that; IT has to allow it.
 
@@ -85,6 +89,11 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - Real print of two emails: one page each, job named "Microsoft Outlook - Memo Style", output matched a manual Outlook print. `PrintOut()` returned only once the job was in the printer queue.
 - Found in testing: `GetActiveObject` cannot see a freshly started Outlook for minutes, so `New-Object -ComObject Outlook.Application` is used; an Outlook with no main window exits when its last email window closes, so the connection is re-checked per email — with a method call, because PowerShell returns `$null` rather than an error when reading a property of a disconnected COM object.
 - Also fixed: a log write failing (the log was briefly locked by another process; cause not identified) stopped the whole folder. Log writes now retry, then warn and carry on.
+
+**Image printing (15 Oct 2026):** `.jpg .jpeg .png` print in colour, 4 per landscape page, with the file name under each image (Ferry's choices: landscape page, no rotation to fit, captions, JPEG + PNG). The script draws the pages itself with .NET `PrintDocument`: Windows' Print Pictures wizard cannot be scripted, and a Word or PDF route was slower or needed an extra tool.
+- Preview test (pages rendered to PNG, nothing printed), made-up images: landscape and portrait fit their cells; a phone-style image stored sideways with orientation tag 6 prints upright; a transparent PNG prints on white; a long file name fits its caption; a corrupt file leaves a grey note and is listed as failed; 6 images make 2 pages.
+- Real print of one page on a network colour printer: colour, margins, orientation and captions all correct; 4 photos made a 254 KB job.
+- Found in testing: `[Math]::Min(1, x)` picks the whole-number version of `Min` when the first argument is `1`, rounding the scale to 0 or 1, so JPEGs shrank to 1x1 pixel and printed blank. Fixed by writing `1.0`.
 
 ### Before 15 Oct 2026
 

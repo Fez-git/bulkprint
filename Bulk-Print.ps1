@@ -5,7 +5,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$supportedExtensions = @('.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf', '.eml')
+Add-Type -AssemblyName System.Drawing
+# Images are not printed one by one: each folder's images go into one job, 4 per page.
+$imageExtensions = @('.jpg', '.jpeg', '.png')
+$supportedExtensions = @('.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf', '.eml') + $imageExtensions
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:SkippedForPrompt = New-Object 'System.Collections.Generic.List[string]'
 $script:FailedForPrompt = New-Object 'System.Collections.Generic.List[string]'
@@ -301,6 +304,150 @@ function Print-EmlFile {
     }
 }
 
+function Get-PrintImage {
+    param(
+        [string]$Path,
+        [double]$BoxWidth,
+        [double]$BoxHeight
+    )
+
+    # Read via memory so the file is not locked, then copy to a new Bitmap so the stream can close.
+    $stream = New-Object System.IO.MemoryStream(, [System.IO.File]::ReadAllBytes($Path))
+    try {
+        $source = [System.Drawing.Image]::FromStream($stream)
+        try {
+            # Phone photos are saved unrotated plus an EXIF orientation tag (0x0112) that GDI+ ignores.
+            if ($source.PropertyIdList -contains 0x0112) {
+                $rotate = switch ([BitConverter]::ToUInt16($source.GetPropertyItem(0x0112).Value, 0)) {
+                    2 { 'RotateNoneFlipX' }
+                    3 { 'Rotate180FlipNone' }
+                    4 { 'Rotate180FlipX' }
+                    5 { 'Rotate90FlipX' }
+                    6 { 'Rotate90FlipNone' }
+                    7 { 'Rotate270FlipX' }
+                    8 { 'Rotate270FlipNone' }
+                    default { $null }
+                }
+                if ($rotate) { $source.RotateFlip([System.Drawing.RotateFlipType]$rotate) }
+            }
+
+            # Shrink to the cell size at 300 dpi (box is in 1/100 inch): full-size photos make a huge print job.
+            # 1.0, not 1: with an int first argument PowerShell picks Math.Min(int, int) and rounds the scale to 0 or 1.
+            $scale = [Math]::Min(1.0, [Math]::Min(($BoxWidth * 3) / $source.Width, ($BoxHeight * 3) / $source.Height))
+            $width = [Math]::Max(1, [int]($source.Width * $scale))
+            $height = [Math]::Max(1, [int]($source.Height * $scale))
+            $bitmap = New-Object System.Drawing.Bitmap($width, $height)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            try {
+                $graphics.Clear([System.Drawing.Color]::White)   # transparent PNG areas print white
+                $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $graphics.DrawImage($source, 0, 0, $width, $height)
+            }
+            finally {
+                $graphics.Dispose()
+            }
+            return $bitmap
+        }
+        finally {
+            $source.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function Print-ImageFiles {
+    param(
+        [System.IO.FileInfo[]]$Files,
+        [string]$JobName,
+        # Tests pass a PreviewPrintController to render pages without printing.
+        [System.Drawing.Printing.PrintController]$Controller = $null
+    )
+
+    $document = New-Object System.Drawing.Printing.PrintDocument
+    $script:ImageJob = @{
+        Files   = $Files
+        Index   = 0
+        Pages   = 0
+        Printed = 0
+        Font    = New-Object System.Drawing.Font('Segoe UI', 8)
+        Format  = New-Object System.Drawing.StringFormat
+    }
+    $script:ImageJob.Format.Alignment = [System.Drawing.StringAlignment]::Center
+    $script:ImageJob.Format.Trimming = [System.Drawing.StringTrimming]::EllipsisCharacter
+    $script:ImageJob.Format.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
+
+    try {
+        $document.DocumentName = "Bulk Print - images - $JobName"
+        $document.DefaultPageSettings.Landscape = $true
+        $document.DefaultPageSettings.Color = $true
+        $document.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(40, 40, 40, 40)
+        if ($null -ne $Controller) { $document.PrintController = $Controller }
+        if (-not $document.PrinterSettings.SupportsColor) {
+            Write-Log 'WARNING  the default printer does not report colour support; images may print in black and white'
+        }
+
+        $document.add_PrintPage({
+            param($sender, $e)
+            $job = $script:ImageJob
+            $job.Pages++
+            $g = $e.Graphics
+            # On a real printer the drawing origin is the corner of the printable area, not the paper edge.
+            if (-not $sender.PrintController.IsPreview) {
+                $g.TranslateTransform(-$e.PageSettings.HardMarginX, -$e.PageSettings.HardMarginY)
+            }
+
+            # 2 x 2 grid inside the margins; units are 1/100 inch.
+            $m = $e.MarginBounds
+            $gap = 20
+            $captionHeight = 18
+            $cellWidth = ($m.Width - $gap) / 2
+            $cellHeight = ($m.Height - $gap) / 2
+            $boxHeight = $cellHeight - $captionHeight
+
+            for ($slot = 0; $slot -lt 4 -and $job.Index -lt $job.Files.Count; $slot++) {
+                $file = $job.Files[$job.Index]
+                $job.Index++
+                $x = $m.Left + ($slot % 2) * ($cellWidth + $gap)
+                $y = $m.Top + [Math]::Floor($slot / 2) * ($cellHeight + $gap)
+                try {
+                    $bitmap = Get-PrintImage $file.FullName $cellWidth $boxHeight
+                    try {
+                        $fit = [Math]::Min($cellWidth / $bitmap.Width, $boxHeight / $bitmap.Height)
+                        $w = $bitmap.Width * $fit
+                        $h = $bitmap.Height * $fit
+                        $g.DrawImage($bitmap, [single]($x + ($cellWidth - $w) / 2), [single]($y + ($boxHeight - $h) / 2), [single]$w, [single]$h)
+                    }
+                    finally {
+                        $bitmap.Dispose()
+                    }
+                    $job.Printed++
+                }
+                catch {
+                    $g.DrawString('(image could not be read)', $job.Font, [System.Drawing.Brushes]::Gray,
+                        (New-Object System.Drawing.RectangleF([single]$x, [single]($y + $boxHeight / 2), [single]$cellWidth, [single]$captionHeight)), $job.Format)
+                    Add-FailedFile $file.Name "image could not be read: $($_.Exception.Message)"
+                }
+                $g.DrawString($file.Name, $job.Font, [System.Drawing.Brushes]::Black,
+                    (New-Object System.Drawing.RectangleF([single]$x, [single]($y + $boxHeight + 2), [single]$cellWidth, [single]$captionHeight)), $job.Format)
+            }
+            $e.HasMorePages = $job.Index -lt $job.Files.Count
+        })
+
+        $document.Print()
+        Write-Log "PRINTED  $($script:ImageJob.Printed) of $($Files.Count) image(s) on $($script:ImageJob.Pages) page(s), colour, 4 per page"
+    }
+    catch {
+        Add-FailedFile "$($Files.Count) image(s)" "image print job failed: $($_.Exception.Message)"
+    }
+    finally {
+        $script:ImageJob.Font.Dispose()
+        $script:ImageJob.Format.Dispose()
+        $document.Dispose()
+    }
+}
+
 function Print-File {
     param([System.IO.FileInfo]$File)
 
@@ -348,6 +495,9 @@ function Invoke-BulkPrintFolder {
     Write-Log "START    Folder: $($folder.FullName)"
     Write-Log 'PRINTER  Windows default printer'
 
+    # Images (also from ZIPs) are collected and printed together at the end of the folder.
+    $folderImages = New-Object 'System.Collections.Generic.List[System.IO.FileInfo]'
+
     if ($zips.Count -gt 0) {
         Write-Host "Found $($zips.Count) ZIP file(s) in '$($folder.Name)'. Extract and print supported contents temporarily? (y/N)" -ForegroundColor Yellow
         $includeZipContents = (Read-Host).Trim().ToLowerInvariant() -eq 'y'
@@ -362,7 +512,8 @@ function Invoke-BulkPrintFolder {
                         $supportedExtensions -contains $_.Extension.ToLowerInvariant()
                     } | Sort-Object FullName)
                     foreach ($file in $archiveFiles) {
-                        Print-File $file
+                        if ($imageExtensions -contains $file.Extension.ToLowerInvariant()) { $folderImages.Add($file) }
+                        else { Print-File $file }
                     }
                     $archiveOther = @(Get-ChildItem -LiteralPath $temp -File -Recurse | Where-Object {
                         ($supportedExtensions -notcontains $_.Extension.ToLowerInvariant()) -and ($_.Extension.ToLowerInvariant() -ne '.zip')
@@ -385,7 +536,12 @@ function Invoke-BulkPrintFolder {
     }
 
     foreach ($file in $printable) {
-        Print-File $file
+        if ($imageExtensions -contains $file.Extension.ToLowerInvariant()) { $folderImages.Add($file) }
+        else { Print-File $file }
+    }
+
+    if ($folderImages.Count -gt 0) {
+        Print-ImageFiles $folderImages.ToArray() $folder.Name
     }
 
     foreach ($file in $other) {
