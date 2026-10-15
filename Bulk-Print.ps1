@@ -50,60 +50,73 @@ function Release-ComObject {
     }
 }
 
+function Test-EncryptedOpenXml {
+    param([System.IO.FileInfo]$File)
+
+    # A normal .docx/.xlsx/.pptx is a ZIP and starts with "PK". A password-protected
+    # one is wrapped in an OLE container instead and starts with D0 CF 11 E0.
+    if ($File.Extension.ToLowerInvariant() -notin @('.docx', '.xlsx', '.pptx')) { return $false }
+    $stream = [System.IO.File]::OpenRead($File.FullName)
+    try {
+        $header = New-Object byte[] 4
+        $read = $stream.Read($header, 0, 4)
+        return ($read -eq 4 -and $header[0] -eq 0xD0 -and $header[1] -eq 0xCF -and $header[2] -eq 0x11 -and $header[3] -eq 0xE0)
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 function Print-OfficeFile {
     param([System.IO.FileInfo]$File)
 
     $extension = $File.Extension.ToLowerInvariant()
     $app = $null
     $document = $null
+    $keepAppOpen = $false
+    # A wrong password makes Office raise an error instead of showing a password box
+    # in a hidden window (which hangs the script). Unprotected files ignore it.
+    $dummyPassword = 'BulkPrint-NoPassword'
 
     try {
+        if (Test-EncryptedOpenXml $File) {
+            Add-SkippedFile $File.Name 'password-protected, print it by hand' $File.Extension
+            return
+        }
+
         switch ($extension) {
-            '.doc' {
+            { $_ -in '.doc', '.docx' } {
                 $app = New-Object -ComObject Word.Application
                 $app.Visible = $false
+                $app.DisplayAlerts = 0
                 try { $app.AutomationSecurity = 3 } catch {}
-                $document = $app.Documents.Open($File.FullName, $false, $true)
+                # FileName, ConfirmConversions, ReadOnly, AddToRecentFiles, PasswordDocument,
+                # PasswordTemplate, Revert, WritePasswordDocument
+                $document = $app.Documents.Open($File.FullName, $false, $true, $false, $dummyPassword, $dummyPassword, $false, $dummyPassword)
                 # Background = $false: return only once spooled, so Quit cannot cancel the job.
                 $document.PrintOut($false)
                 $document.Close(0)
             }
-            '.docx' {
-                $app = New-Object -ComObject Word.Application
-                $app.Visible = $false
-                try { $app.AutomationSecurity = 3 } catch {}
-                $document = $app.Documents.Open($File.FullName, $false, $true)
-                $document.PrintOut($false)
-                $document.Close(0)
-            }
-            '.xls' {
+            { $_ -in '.xls', '.xlsx' } {
                 $app = New-Object -ComObject Excel.Application
                 $app.Visible = $false
                 $app.DisplayAlerts = $false
                 try { $app.AutomationSecurity = 3 } catch {}
-                $document = $app.Workbooks.Open($File.FullName, 0, $true)
+                # FileName, UpdateLinks, ReadOnly, Format, Password, WriteResPassword, IgnoreReadOnlyRecommended
+                # WriteResPassword stays Missing: a dummy value there makes every unprotected workbook fail to open.
+                $document = $app.Workbooks.Open($File.FullName, 0, $true, 5, $dummyPassword, [Type]::Missing, $true)
                 $document.PrintOut()
                 $document.Close($false)
             }
-            '.xlsx' {
-                $app = New-Object -ComObject Excel.Application
-                $app.Visible = $false
-                $app.DisplayAlerts = $false
-                try { $app.AutomationSecurity = 3 } catch {}
-                $document = $app.Workbooks.Open($File.FullName, 0, $true)
-                $document.PrintOut()
-                $document.Close($false)
-            }
-            '.ppt' {
+            { $_ -in '.ppt', '.pptx' } {
+                # PowerPoint runs only once per user: New-Object attaches to an open copy,
+                # and Quit would close the user's own presentations.
+                $keepAppOpen = @(Get-Process -Name POWERPNT -ErrorAction SilentlyContinue).Count -gt 0
                 $app = New-Object -ComObject PowerPoint.Application
-                $document = $app.Presentations.Open($File.FullName, $true, $false, $false)
-                $document.PrintOptions.PrintInBackground = 0
-                $document.PrintOut()
-                $document.Close()
-            }
-            '.pptx' {
-                $app = New-Object -ComObject PowerPoint.Application
-                $document = $app.Presentations.Open($File.FullName, $true, $false, $false)
+                # PowerPoint has no password argument; "file::password::" fails instead of prompting.
+                # .pptx needs no trick: an encrypted one was already caught above.
+                $openPath = if ($extension -eq '.ppt') { "$($File.FullName)::$($dummyPassword)::" } else { $File.FullName }
+                $document = $app.Presentations.Open($openPath, $true, $false, $false)
                 $document.PrintOptions.PrintInBackground = 0
                 $document.PrintOut()
                 $document.Close()
@@ -115,9 +128,13 @@ function Print-OfficeFile {
         Add-FailedFile $File.Name $_.Exception.Message
     }
     finally {
-        if ($null -ne $document) { Release-ComObject $document }
+        if ($null -ne $document) {
+            # Inside the user's own PowerPoint, close a presentation left open by a failed print.
+            if ($keepAppOpen) { try { $document.Close() } catch {} }
+            Release-ComObject $document
+        }
         if ($null -ne $app) {
-            try { $app.Quit() } catch {}
+            if (-not $keepAppOpen) { try { $app.Quit() } catch {} }
             Release-ComObject $app
         }
         [GC]::Collect()
