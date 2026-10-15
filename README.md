@@ -1,6 +1,6 @@
 # Bulk Print
 
-Right-click one or more folders in Windows Explorer and print every Word, Excel, PowerPoint and PDF file in them to the default printer.
+Right-click one or more folders in Windows Explorer and print every Word, Excel, PowerPoint, PDF and email (`.eml`) file in them to the default printer.
 
 ## Files
 
@@ -10,7 +10,6 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 | `Install-SendTo.cmd` | Double-click to install or update. Runs `Install-SendTo.ps1`. |
 | `Install-SendTo.ps1` | Downloads the latest `Bulk-Print.ps1` from GitHub, then adds **Send to → Bulk Print** to the right-click menu for the current user. No admin rights needed. |
 | `Uninstall-SendTo.cmd` | Removes the Send To shortcut. |
-| `Print-Email.ps1` | Opens a `.eml` in Outlook and shows the print dialog. Not wired to any installer. |
 
 ## Requirements
 
@@ -18,6 +17,7 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - Desktop Microsoft Office (Word, Excel, PowerPoint). Office on the web and the Microsoft Store edition cannot be automated.
 - A default printer. Settings → Printers: switch off "Let Windows manage my default printer" and pick one.
 - A PDF program that offers **Print** when you right-click a PDF (Adobe Reader does; Edge may not).
+- For `.eml`: **classic** Outlook, set as the program that opens `.eml` files (double-click one to check). The new Outlook app cannot be scripted.
 
 ## Install
 
@@ -40,9 +40,10 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 
 ## What it does
 
-- Prints `.doc .docx .xls .xlsx .ppt .pptx .pdf` in each selected folder, in name order. Subfolders are not included.
+- Prints `.doc .docx .xls .xlsx .ppt .pptx .pdf .eml` in each selected folder, in name order. Subfolders are not included.
+- Emails print exactly as Outlook's Quick Print does: whole email, Memo Style, default printer. Each email briefly opens in Outlook (the script asks for the window to be minimised; whether it flashes on screen first is not verified) and closes again; Outlook itself is never closed. If Outlook was not running, it starts for each email (about 6 s each) and closes again afterwards.
 - If a folder contains ZIP files, asks once per folder whether to extract and print their supported contents.
-- Lists everything else as skipped. `.eml` and `.md` are logged but left out of the on-screen summary.
+- Lists everything else as skipped. `.md` files (including triage `.eml.md` notes) are logged but left out of the on-screen summary.
 - Writes a log, `Bulk-Print-<date-time>.log`, into each folder it prints (skipped, with a warning, if the folder is read-only).
 - Ends with a summary: failed files in red, skipped files in yellow, each labelled with its folder.
 
@@ -53,6 +54,8 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - **Password-protected files are not printed** — they are listed as skipped or failed. Print them by hand.
 - **Office can still hang on an unexpected dialog** (a first-run or licence prompt, for example) because it runs hidden. If the window sits there doing nothing, end `WINWORD`, `EXCEL` or `POWERPNT` in Task Manager.
 - **Read-only folders** (some network shares) cannot hold the log. The script prints them anyway, with no log, and shows a yellow warning when it starts that folder and again in the end summary.
+- **Emails print in full** — there is no page limit; Outlook's scripting interface has no page range. Attachments inside an `.eml` are not printed (Outlook's default).
+- **An email is matched to its Outlook window by subject.** If Outlook shows the email under a different subject than the file's header (unusual encodings), it fails after 60 s rather than risk printing the wrong email.
 - **Very large selections** may exceed the Windows command-line length limit for Send To. Not measured.
 - **Work PCs:** if the window flashes and closes, a Group Policy execution policy is probably blocking scripts. `-ExecutionPolicy Bypass` does not override that; IT has to allow it.
 
@@ -76,6 +79,12 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 **Gotcha found in testing:** passing a dummy `WriteResPassword` to Excel's `Workbooks.Open` makes every *unprotected* workbook fail to open. It is left as `[Type]::Missing`.
 
 **Installer self-update (15 Oct 2026):** `Install-SendTo.cmd` now downloads the latest `Bulk-Print.ps1` before installing. Tested: cut-off download and wrong file both rejected with the local script kept; newer version replaces it with a `.bak`; repeat run reports "already the latest"; git clone skips the download; no temp files left behind. Needs the repo to be public — a private repo returns 404 without login.
+
+**Email printing (15 Oct 2026):** `.eml` files print through Outlook, replacing the separate `Print-Email.ps1` (removed). Outlook cannot open `.eml` through its scripting interface, so each email is opened the way a double-click does, its window is found by subject, printed with `PrintOut()` and closed without saving.
+- Tested with printing removed, on made-up emails (short; long with attachment and folded subject; French/Chinese encoded subject): with Outlook open and another email showing — including one with the same subject — each was found and closed in about 3 s and the user's window left open; with Outlook closed, about 6 s each and Outlook closed again afterwards.
+- Real print of two emails: one page each, job named "Microsoft Outlook - Memo Style", output matched a manual Outlook print. `PrintOut()` returned only once the job was in the printer queue.
+- Found in testing: `GetActiveObject` cannot see a freshly started Outlook for minutes, so `New-Object -ComObject Outlook.Application` is used; an Outlook with no main window exits when its last email window closes, so the connection is re-checked per email — with a method call, because PowerShell returns `$null` rather than an error when reading a property of a disconnected COM object.
+- Also fixed: a log write failing (the log was briefly locked by another process; cause not identified) stopped the whole folder. Log writes now retry, then warn and carry on.
 
 ### Before 15 Oct 2026
 

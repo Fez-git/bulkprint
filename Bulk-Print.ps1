@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$supportedExtensions = @('.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf')
+$supportedExtensions = @('.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf', '.eml')
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:SkippedForPrompt = New-Object 'System.Collections.Generic.List[string]'
 $script:FailedForPrompt = New-Object 'System.Collections.Generic.List[string]'
@@ -14,12 +14,26 @@ $script:LogPaths = New-Object 'System.Collections.Generic.List[string]'
 $script:NoLogFolders = New-Object 'System.Collections.Generic.List[string]'
 $script:LogPath = $null
 $script:CurrentFolderName = ''
+$script:Outlook = $null
 
 function Write-Log {
     param([string]$Message)
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $Message"
     # No log path when the folder is read-only: screen output only.
-    if ($script:LogPath) { Add-Content -LiteralPath $script:LogPath -Value $line }
+    if ($script:LogPath) {
+        # The log was once found locked by another process mid-run (cause not identified).
+        # Retry briefly, and never let a log write stop the printing.
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+                Add-Content -LiteralPath $script:LogPath -Value $line -ErrorAction Stop
+                break
+            }
+            catch {
+                if ($attempt -lt 5) { Start-Sleep -Milliseconds 200 }
+                else { Write-Host "WARNING: could not write to the log: $($_.Exception.Message)" -ForegroundColor Yellow }
+            }
+        }
+    }
     Write-Host $line
 }
 
@@ -31,7 +45,7 @@ function Add-SkippedFile {
     )
 
     Write-Log "SKIPPED  $Name -- $Reason"
-    if ($Extension.ToLowerInvariant() -notin @('.eml', '.md')) {
+    if ($Extension.ToLowerInvariant() -notin @('.md')) {
         [void]$script:SkippedForPrompt.Add("[$script:CurrentFolderName] $Name -- $Reason")
     }
 }
@@ -156,6 +170,147 @@ function Print-PdfFile {
     }
 }
 
+function ConvertFrom-EncodedWord {
+    param([string]$Text)
+
+    # RFC 2047 encoded words, e.g. =?UTF-8?B?...?= or =?iso-8859-1?Q?...?=
+    # Whitespace between two encoded words is not part of the text.
+    $Text = $Text -replace '(\?=)\s+(=\?)', '$1$2'
+    return [regex]::Replace($Text, '=\?([^?]+)\?([BbQq])\?([^?]*)\?=', [System.Text.RegularExpressions.MatchEvaluator]{
+        param($m)
+        try {
+            $encoding = [System.Text.Encoding]::GetEncoding($m.Groups[1].Value)
+            if ($m.Groups[2].Value -in 'B', 'b') {
+                $bytes = [Convert]::FromBase64String($m.Groups[3].Value)
+            }
+            else {
+                $q = $m.Groups[3].Value -replace '_', ' '
+                $list = New-Object 'System.Collections.Generic.List[byte]'
+                for ($i = 0; $i -lt $q.Length; $i++) {
+                    if ($q[$i] -eq '=' -and $i + 2 -lt $q.Length) {
+                        $list.Add([Convert]::ToByte($q.Substring($i + 1, 2), 16)); $i += 2
+                    }
+                    else { $list.Add([byte][char]$q[$i]) }
+                }
+                $bytes = $list.ToArray()
+            }
+            $encoding.GetString($bytes)
+        }
+        catch { $m.Value }
+    })
+}
+
+function Get-EmlSubject {
+    param([System.IO.FileInfo]$File)
+
+    # Headers sit at the top of the file; 64 KB is plenty and avoids reading attachments.
+    $stream = [System.IO.File]::OpenRead($File.FullName)
+    try {
+        $buffer = New-Object byte[] ([Math]::Min($stream.Length, 65536))
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    $text = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
+    $headerEnd = [regex]::Match($text, '\r?\n\r?\n')
+    if ($headerEnd.Success) { $text = $text.Substring(0, $headerEnd.Index) }
+    # Long headers are folded onto continuation lines that start with whitespace.
+    $text = $text -replace '\r?\n[ \t]+', ' '
+    $match = [regex]::Match($text, '(?im)^Subject:[ \t]*(.*?)\r?$')
+    if (-not $match.Success) { return '' }
+    return (ConvertFrom-EncodedWord $match.Groups[1].Value).Trim()
+}
+
+function Get-Outlook {
+    # New-Object, not GetActiveObject: a freshly started Outlook stays invisible to GetActiveObject
+    # for minutes (Office registers itself late), and Outlook runs once per user, so New-Object
+    # returns the running copy or starts one.
+    # An Outlook with no main window exits when its last email window closes, even while this
+    # script holds it, so check the connection is alive and reconnect if not.
+    # The check must be a method call: PowerShell returns $null instead of throwing when a
+    # property is read from a disconnected COM object.
+    if ($null -ne $script:Outlook) {
+        try { [void]$script:Outlook.GetNamespace('MAPI') }
+        catch {
+            Release-ComObject $script:Outlook
+            $script:Outlook = $null
+        }
+    }
+    if ($null -eq $script:Outlook) {
+        $script:Outlook = New-Object -ComObject Outlook.Application
+    }
+    return $script:Outlook
+}
+
+function Print-EmlFile {
+    param([System.IO.FileInfo]$File)
+
+    $inspector = $null
+    $item = $null
+
+    try {
+        $subject = Get-EmlSubject $File
+        $outlook = Get-Outlook
+        $initialCount = $outlook.Inspectors.Count
+
+        # Outlook's object model cannot open .eml (OpenSharedItem takes .msg only),
+        # so open it the way a double-click does and pick up the window Outlook shows.
+        Start-Process -FilePath $File.FullName | Out-Null
+
+        $timeoutSeconds = 60
+        $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+        while ($null -eq $inspector -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            try {
+                for ($i = $outlook.Inspectors.Count; $i -gt $initialCount; $i--) {
+                    $candidate = $outlook.Inspectors.Item($i)
+                    # Match on Subject so an email the user opens meanwhile is never printed by mistake.
+                    if ("$($candidate.CurrentItem.Subject)".Trim() -eq $subject) {
+                        $inspector = $candidate
+                        break
+                    }
+                    Release-ComObject $candidate
+                }
+            }
+            catch {}
+        }
+        if ($null -eq $inspector) {
+            throw "Outlook did not open the email within $timeoutSeconds seconds (looked for subject '$subject')"
+        }
+
+        try { $inspector.WindowState = 1 } catch {}   # olMinimized
+        $item = $inspector.CurrentItem
+        # Same as Outlook's Quick Print: default printer, Memo Style, whole email.
+        $item.PrintOut()
+        Start-Sleep -Seconds 2
+        Write-Log "PRINTED  $($File.Name)"
+    }
+    catch {
+        Add-FailedFile $File.Name $_.Exception.Message
+    }
+    finally {
+        # Close only the email window (olDiscard = 1). Never Quit: Outlook is the user's mailbox.
+        if ($null -ne $inspector) {
+            try { $inspector.Close(1) } catch {}
+        }
+        Release-ComObject $item
+        Release-ComObject $inspector
+        [GC]::Collect()
+        [GC]::WaitForPendingFinalizers()
+    }
+}
+
+function Print-File {
+    param([System.IO.FileInfo]$File)
+
+    switch ($File.Extension.ToLowerInvariant()) {
+        '.pdf' { Print-PdfFile $File }
+        '.eml' { Print-EmlFile $File }
+        default { Print-OfficeFile $File }
+    }
+}
+
 function Invoke-BulkPrintFolder {
     param([string]$Path)
 
@@ -207,7 +362,7 @@ function Invoke-BulkPrintFolder {
                         $supportedExtensions -contains $_.Extension.ToLowerInvariant()
                     } | Sort-Object FullName)
                     foreach ($file in $archiveFiles) {
-                        if ($file.Extension.ToLowerInvariant() -eq '.pdf') { Print-PdfFile $file } else { Print-OfficeFile $file }
+                        Print-File $file
                     }
                     $archiveOther = @(Get-ChildItem -LiteralPath $temp -File -Recurse | Where-Object {
                         ($supportedExtensions -notcontains $_.Extension.ToLowerInvariant()) -and ($_.Extension.ToLowerInvariant() -ne '.zip')
@@ -230,7 +385,7 @@ function Invoke-BulkPrintFolder {
     }
 
     foreach ($file in $printable) {
-        if ($file.Extension.ToLowerInvariant() -eq '.pdf') { Print-PdfFile $file } else { Print-OfficeFile $file }
+        Print-File $file
     }
 
     foreach ($file in $other) {
@@ -259,6 +414,13 @@ foreach ($path in $folders) {
     }
 }
 
+# Let go of Outlook without closing it: an Outlook the user had open stays open,
+# one started for this run exits by itself once nothing holds it.
+Release-ComObject $script:Outlook
+$script:Outlook = $null
+[GC]::Collect()
+[GC]::WaitForPendingFinalizers()
+
 if ($script:FailedForPrompt.Count -gt 0) {
     Write-Host "`nFAILED ($($script:FailedForPrompt.Count)):" -ForegroundColor Red
     foreach ($failed in $script:FailedForPrompt) {
@@ -267,13 +429,13 @@ if ($script:FailedForPrompt.Count -gt 0) {
 }
 
 if ($script:SkippedForPrompt.Count -gt 0) {
-    Write-Host "`nSkipped files (excluding .eml and .md):" -ForegroundColor Yellow
+    Write-Host "`nSkipped files (excluding .md):" -ForegroundColor Yellow
     foreach ($skipped in $script:SkippedForPrompt) {
         Write-Host " - $skipped" -ForegroundColor Yellow
     }
 }
 else {
-    Write-Host "`nNo files were skipped, excluding .eml and .md." -ForegroundColor Green
+    Write-Host "`nNo files were skipped, excluding .md." -ForegroundColor Green
 }
 
 if ($script:LogPaths.Count -gt 0) {
