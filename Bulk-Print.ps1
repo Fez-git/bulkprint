@@ -11,12 +11,15 @@ $script:SkippedForPrompt = New-Object 'System.Collections.Generic.List[string]'
 $script:FailedForPrompt = New-Object 'System.Collections.Generic.List[string]'
 $script:TempFolders = New-Object 'System.Collections.Generic.List[string]'
 $script:LogPaths = New-Object 'System.Collections.Generic.List[string]'
+$script:NoLogFolders = New-Object 'System.Collections.Generic.List[string]'
+$script:LogPath = $null
 $script:CurrentFolderName = ''
 
 function Write-Log {
     param([string]$Message)
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $Message"
-    Add-Content -LiteralPath $script:LogPath -Value $line
+    # No log path when the folder is read-only: screen output only.
+    if ($script:LogPath) { Add-Content -LiteralPath $script:LogPath -Value $line }
     Write-Host $line
 }
 
@@ -177,8 +180,16 @@ function Invoke-BulkPrintFolder {
     })
 
     $script:LogPath = Join-Path $folder.FullName "Bulk-Print-$timestamp.log"
-    New-Item -ItemType File -Path $script:LogPath -Force | Out-Null
-    [void]$script:LogPaths.Add($script:LogPath)
+    try {
+        New-Item -ItemType File -Path $script:LogPath -Force | Out-Null
+        [void]$script:LogPaths.Add($script:LogPath)
+    }
+    catch {
+        # Read-only folder (e.g. a network share): print anyway, without a log.
+        $script:LogPath = $null
+        [void]$script:NoLogFolders.Add($folder.FullName)
+        Write-Host 'WARNING: this folder is read-only, so no log was created. Printing anyway.' -ForegroundColor Yellow
+    }
     Write-Log "START    Folder: $($folder.FullName)"
     Write-Log 'PRINTER  Windows default printer'
 
@@ -268,6 +279,11 @@ else {
 if ($script:LogPaths.Count -gt 0) {
     Write-Host "`nFinished. Log(s) saved to:" -ForegroundColor Green
     foreach ($log in $script:LogPaths) { Write-Host " $log" -ForegroundColor Green }
+}
+
+if ($script:NoLogFolders.Count -gt 0) {
+    Write-Host "`nWARNING: no log was created for these read-only folder(s). Their files were still sent to print:" -ForegroundColor Yellow
+    foreach ($noLog in $script:NoLogFolders) { Write-Host " $noLog" -ForegroundColor Yellow }
 }
 
 if ($script:TempFolders.Count -gt 0) {
