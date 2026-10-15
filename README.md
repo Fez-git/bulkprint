@@ -43,7 +43,7 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - Prints `.doc .docx .xls .xlsx .ppt .pptx .pdf .eml .jpg .jpeg .png` in each selected folder, in name order. Subfolders are not included.
 - Emails print exactly as Outlook's Quick Print does: whole email, Memo Style, default printer. Each email briefly opens in Outlook (the script asks for the window to be minimised; whether it flashes on screen first is not verified) and closes again; Outlook itself is never closed. If Outlook was not running, it starts for each email (about 6 s each) and closes again afterwards.
 - If a folder contains ZIP files, asks once per folder whether to extract and print their supported contents.
-- Images (including any inside ZIPs) print together as one job at the end of each folder: landscape A4/Letter page, 2 x 2 grid, each image fitted to its quarter without stretching, file name underneath, colour requested. Phone photos are turned upright from their rotation tag; transparent areas print white. Images are shrunk to 300 dpi at their printed size so the job stays small. An unreadable image leaves a grey note in its place and is listed as failed.
+- Images (including any inside ZIPs) print together as one job at the end of each folder: portrait page (set `$imagePageLandscape = $true` at the top of `Bulk-Print.ps1` for landscape), 2 x 2 grid, each image fitted to its quarter without stretching, file name underneath, colour requested. Phone photos are turned upright from their rotation tag; transparent areas print white. Images are shrunk to 300 dpi at their printed size so the job stays small. An unreadable image leaves a grey note in its place and is listed as failed.
 - Lists everything else as skipped. `.md` files (including triage `.eml.md` notes) are logged but left out of the on-screen summary.
 - Writes a log, `Bulk-Print-<date-time>.log`, into each folder it prints (skipped, with a warning, if the folder is read-only).
 - Ends with a summary: failed files in red, skipped files in yellow, each labelled with its folder.
@@ -58,8 +58,8 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - **Emails print in full** — there is no page limit; Outlook's scripting interface has no page range. Attachments inside an `.eml` are not printed (Outlook's default).
 - **An email is matched to its Outlook window by subject.** If Outlook shows the email under a different subject than the file's header (unusual encodings), it fails after 60 s rather than risk printing the wrong email.
 - **Images: HEIC** (iPhone's default format) **is not supported** and is listed as skipped. Set the iPhone to "Most Compatible" (JPEG) or convert first.
-- **Images: colour is requested, not guaranteed** — a black-and-white printer, or a driver that ignores the request, prints grey. A printer that reports no colour support gets a warning in the log.
-- **Images: portrait photos print smaller** than landscape ones, because the page is landscape and photos are never rotated to fit.
+- **Colour: documents follow the printer, images ask for colour.** Word, Excel, PowerPoint, PDFs and emails print with the printer's default, which the script cannot change for those programs. For black-and-white documents, set the printer to black and white in **Settings → Printers & scanners → printer → Manage → Printing preferences** (affects only your Windows account). Images request colour on their own job, which overrides that default — confirmed with Windows' generic network-printer driver (Microsoft IPP Class Driver). **Some manufacturer drivers ignore the request** and print images in black and white; the log's `IMAGES` line shows the printer, driver and whether colour was requested, to diagnose this.
+- **Images: landscape photos print smaller** than portrait ones on the default portrait page, because photos are never rotated to fit.
 - **Very large selections** may exceed the Windows command-line length limit for Send To. Not measured.
 - **Work PCs:** if the window flashes and closes, a Group Policy execution policy is probably blocking scripts. `-ExecutionPolicy Bypass` does not override that; IT has to allow it.
 
@@ -94,6 +94,8 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - Preview test (pages rendered to PNG, nothing printed), made-up images: landscape and portrait fit their cells; a phone-style image stored sideways with orientation tag 6 prints upright; a transparent PNG prints on white; a long file name fits its caption; a corrupt file leaves a grey note and is listed as failed; 6 images make 2 pages.
 - Real print of one page on a network colour printer: colour, margins, orientation and captions all correct; 4 photos made a 254 KB job.
 - Found in testing: `[Math]::Min(1, x)` picks the whole-number version of `Min` when the first argument is `1`, rounding the scale to 0 or 1, so JPEGs shrank to 1x1 pixel and printed blank. Fixed by writing `1.0`.
+
+**Image follow-up (15 Oct 2026):** image pages switched to portrait by default (Ferry), set by `$imagePageLandscape` at the top of the script; preview checked. Each image job now logs an `IMAGES` line (printer, driver, colour support, colour requested). Colour test: with this PC's printer preference set to black and white, an image page still printed in colour (IPP class driver), so documents can default to black and white while images print in colour. On another PC a manufacturer driver printed images in black and white — not yet solved.
 
 ### Before 15 Oct 2026
 

@@ -8,6 +8,8 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 # Images are not printed one by one: each folder's images go into one job, 4 per page.
 $imageExtensions = @('.jpg', '.jpeg', '.png')
+# Page orientation for image pages. Portrait suits portrait photos; set to $true for landscape.
+$imagePageLandscape = $false
 $supportedExtensions = @('.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf', '.eml') + $imageExtensions
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $script:SkippedForPrompt = New-Object 'System.Collections.Generic.List[string]'
@@ -380,10 +382,16 @@ function Print-ImageFiles {
 
     try {
         $document.DocumentName = "Bulk Print - images - $JobName"
-        $document.DefaultPageSettings.Landscape = $true
+        $document.DefaultPageSettings.Landscape = $imagePageLandscape
         $document.DefaultPageSettings.Color = $true
         $document.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(40, 40, 40, 40)
         if ($null -ne $Controller) { $document.PrintController = $Controller }
+
+        # Logged every time: a driver can ignore the colour request (manufacturer drivers often have their
+        # own colour-mode setting), and this line is what tells the cases apart afterwards.
+        $printerName = $document.PrinterSettings.PrinterName
+        $driverName = try { (Get-CimInstance Win32_Printer | Where-Object Name -eq $printerName | Select-Object -First 1).DriverName } catch { 'unknown' }
+        Write-Log "IMAGES   printer '$printerName', driver '$driverName', reports colour support: $($document.PrinterSettings.SupportsColor), colour requested: $($document.DefaultPageSettings.Color)"
         if (-not $document.PrinterSettings.SupportsColor) {
             Write-Log 'WARNING  the default printer does not report colour support; images may print in black and white'
         }
