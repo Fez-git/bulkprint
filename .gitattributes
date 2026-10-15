@@ -1,0 +1,5 @@
+# cmd.exe mishandles labels/goto in batch files with LF-only line endings.
+# Check out (and ZIP-download) .cmd files with CRLF.
+# .ps1 is deliberately left alone: Install-SendTo.ps1 compares the local Bulk-Print.ps1
+# with the GitHub raw copy (always LF) byte for byte, so CRLF there would re-download every run.
+*.cmd text eol=crlf
