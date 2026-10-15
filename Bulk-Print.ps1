@@ -1,4 +1,6 @@
 param(
+    # One-time setup per PC: save the printer's own colour settings for image jobs (Setup-ImageColour.cmd).
+    [switch]$SetupImageColour,
     # Send To passes every selected folder as a separate argument.
     [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
     [string[]]$FolderPath
@@ -359,6 +361,104 @@ function Get-PrintImage {
     }
 }
 
+function Initialize-Winspool {
+    if ('BulkPrint.Winspool' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+namespace BulkPrint {
+    public static class Winspool {
+        [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool OpenPrinter(string name, out IntPtr handle, IntPtr defaults);
+        [DllImport("winspool.drv", SetLastError = true)]
+        static extern bool ClosePrinter(IntPtr handle);
+        [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern int DocumentProperties(IntPtr hwnd, IntPtr printer, string deviceName, IntPtr output, IntPtr input, int mode);
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr GetConsoleWindow();
+
+        const int DM_OUT_BUFFER = 2, DM_IN_PROMPT = 4, DM_IN_BUFFER = 8, IDOK = 1;
+
+        // The printer's full DEVMODE for this user, including the driver's private section.
+        // With prompt, the driver's own Printing Preferences window opens; null if the user cancels.
+        public static byte[] GetDevMode(string printerName, IntPtr hwnd, bool prompt) {
+            IntPtr printer;
+            if (!OpenPrinter(printerName, out printer, IntPtr.Zero)) throw new Win32Exception();
+            try {
+                int size = DocumentProperties(hwnd, printer, printerName, IntPtr.Zero, IntPtr.Zero, 0);
+                if (size <= 0) throw new Win32Exception();
+                IntPtr input = Marshal.AllocHGlobal(size), output = Marshal.AllocHGlobal(size);
+                try {
+                    if (DocumentProperties(hwnd, printer, printerName, input, IntPtr.Zero, DM_OUT_BUFFER) < 0) throw new Win32Exception();
+                    IntPtr result = input;
+                    if (prompt) {
+                        if (DocumentProperties(hwnd, printer, printerName, output, input, DM_IN_BUFFER | DM_IN_PROMPT | DM_OUT_BUFFER) != IDOK) return null;
+                        result = output;
+                    }
+                    byte[] bytes = new byte[size];
+                    Marshal.Copy(result, bytes, 0, size);
+                    return bytes;
+                }
+                finally { Marshal.FreeHGlobal(input); Marshal.FreeHGlobal(output); }
+            }
+            finally { ClosePrinter(printer); }
+        }
+    }
+}
+'@
+}
+
+function Get-ImageColourProfilePath {
+    param([string]$PrinterName)
+    # Per user and per printer, outside the install folder so updates and reinstalls keep it.
+    $safeName = $PrinterName -replace '[\\/:*?"<>|]', '_'
+    return Join-Path $env:LOCALAPPDATA "BulkPrint\ImageColour-$safeName.devmode"
+}
+
+function Invoke-ImageColourSetup {
+    Initialize-Winspool
+    $printerName = (New-Object System.Drawing.Printing.PrinterSettings).PrinterName
+    Write-Host "Default printer: $printerName" -ForegroundColor Cyan
+    Write-Host 'The printer''s own Printing Preferences window will open.'
+    Write-Host 'Choose COLOUR (for example "Output Color: Color"), leave everything else as it is, and click OK.' -ForegroundColor Yellow
+    Write-Host 'This is used for image printing only; documents keep the printer''s normal settings.'
+    $bytes = [BulkPrint.Winspool]::GetDevMode($printerName, [BulkPrint.Winspool]::GetConsoleWindow(), $true)
+    if ($null -eq $bytes) {
+        Write-Host 'Cancelled. Nothing was saved.' -ForegroundColor Yellow
+        return
+    }
+    $path = Get-ImageColourProfilePath $printerName
+    New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
+    [System.IO.File]::WriteAllBytes($path, $bytes)
+    Write-Host "Saved. Images printed on '$printerName' will use these settings." -ForegroundColor Green
+    Write-Host "Profile: $path"
+    Write-Host 'Run this setup again if the printer driver is updated or images come out in black and white.'
+}
+
+function Set-ImageColourProfile {
+    param([System.Drawing.Printing.PrintDocument]$Document)
+
+    # Returns the profile path if one was applied, $null if none exists.
+    $path = Get-ImageColourProfilePath $Document.PrinterSettings.PrinterName
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    # DEVMODE: dmSize at byte 68, dmDriverExtra at byte 70; together they are the whole record.
+    if ($bytes.Length -lt 72 -or ([BitConverter]::ToUInt16($bytes, 68) + [BitConverter]::ToUInt16($bytes, 70)) -ne $bytes.Length) {
+        throw "the saved colour profile is damaged ($path); run Setup-ImageColour.cmd again"
+    }
+    $handle = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+    try {
+        [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $handle, $bytes.Length)
+        $Document.PrinterSettings.SetHdevmode($handle)
+        $Document.DefaultPageSettings.SetHdevmode($handle)
+    }
+    finally {
+        [System.Runtime.InteropServices.Marshal]::FreeHGlobal($handle)
+    }
+    return $path
+}
+
 function Print-ImageFiles {
     param(
         [System.IO.FileInfo[]]$Files,
@@ -382,8 +482,21 @@ function Print-ImageFiles {
 
     try {
         $document.DocumentName = "Bulk Print - images - $JobName"
+
+        # Manufacturer drivers (e.g. FUJIFILM) ignore the standard colour request and use their own
+        # setting, so a saved profile from the driver's own window decides colour when one exists.
+        $profileUsed = $null
+        try {
+            Initialize-Winspool
+            $profileUsed = Set-ImageColourProfile $document
+        }
+        catch {
+            Write-Log "WARNING  colour profile not used: $($_.Exception.Message)"
+        }
+        if ($null -eq $profileUsed) { $document.DefaultPageSettings.Color = $true }
+
+        # Layout is applied after the profile, so the profile cannot change it.
         $document.DefaultPageSettings.Landscape = $imagePageLandscape
-        $document.DefaultPageSettings.Color = $true
         $document.DefaultPageSettings.Margins = New-Object System.Drawing.Printing.Margins(40, 40, 40, 40)
         if ($null -ne $Controller) { $document.PrintController = $Controller }
 
@@ -391,7 +504,8 @@ function Print-ImageFiles {
         # own colour-mode setting), and this line is what tells the cases apart afterwards.
         $printerName = $document.PrinterSettings.PrinterName
         $driverName = try { (Get-CimInstance Win32_Printer | Where-Object Name -eq $printerName | Select-Object -First 1).DriverName } catch { 'unknown' }
-        Write-Log "IMAGES   printer '$printerName', driver '$driverName', reports colour support: $($document.PrinterSettings.SupportsColor), colour requested: $($document.DefaultPageSettings.Color)"
+        $profileText = if ($profileUsed) { 'saved profile (Setup-ImageColour)' } else { 'none - standard colour request only' }
+        Write-Log "IMAGES   printer '$printerName', driver '$driverName', reports colour support: $($document.PrinterSettings.SupportsColor), colour requested: $($document.DefaultPageSettings.Color), colour profile: $profileText"
         if (-not $document.PrinterSettings.SupportsColor) {
             Write-Log 'WARNING  the default printer does not report colour support; images may print in black and white'
         }
@@ -444,7 +558,7 @@ function Print-ImageFiles {
         })
 
         $document.Print()
-        Write-Log "PRINTED  $($script:ImageJob.Printed) of $($Files.Count) image(s) on $($script:ImageJob.Pages) page(s), colour, 4 per page"
+        Write-Log "PRINTED  $($script:ImageJob.Printed) of $($Files.Count) image(s) on $($script:ImageJob.Pages) page(s), 4 per page"
     }
     catch {
         Add-FailedFile "$($Files.Count) image(s)" "image print job failed: $($_.Exception.Message)"
@@ -557,6 +671,13 @@ function Invoke-BulkPrintFolder {
     }
 
     Write-Log 'END      Folder finished.'
+}
+
+if ($SetupImageColour) {
+    try { Invoke-ImageColourSetup }
+    catch { Write-Host "Setup failed: $($_.Exception.Message)" -ForegroundColor Red }
+    Read-Host 'Press Enter to close'
+    exit
 }
 
 $folders = @($FolderPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })

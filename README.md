@@ -10,6 +10,7 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 | `Install-SendTo.cmd` | Double-click to install or update. Runs `Install-SendTo.ps1`. |
 | `Install-SendTo.ps1` | Downloads the latest `Bulk-Print.ps1` from GitHub, then adds **Send to → Bulk Print** to the right-click menu for the current user. No admin rights needed. |
 | `Uninstall-SendTo.cmd` | Removes the Send To shortcut. |
+| `Setup-ImageColour.cmd` | One-time per PC, only if images print in black and white: opens the printer's own settings window; choose Colour and click OK. Saved for image jobs only. |
 
 ## Requirements
 
@@ -58,7 +59,7 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - **Emails print in full** — there is no page limit; Outlook's scripting interface has no page range. Attachments inside an `.eml` are not printed (Outlook's default).
 - **An email is matched to its Outlook window by subject.** If Outlook shows the email under a different subject than the file's header (unusual encodings), it fails after 60 s rather than risk printing the wrong email.
 - **Images: HEIC** (iPhone's default format) **is not supported** and is listed as skipped. Set the iPhone to "Most Compatible" (JPEG) or convert first.
-- **Colour: documents follow the printer, images ask for colour.** Word, Excel, PowerPoint, PDFs and emails print with the printer's default, which the script cannot change for those programs. For black-and-white documents, set the printer to black and white in **Settings → Printers & scanners → printer → Manage → Printing preferences** (affects only your Windows account). Images request colour on their own job, which overrides that default — confirmed with Windows' generic network-printer driver (Microsoft IPP Class Driver). **Some manufacturer drivers ignore the request** and print images in black and white; the log's `IMAGES` line shows the printer, driver and whether colour was requested, to diagnose this.
+- **Colour: documents follow the printer, images ask for colour.** Word, Excel, PowerPoint, PDFs and emails print with the printer's default, which the script cannot change for those programs. For black-and-white documents, set the printer to black and white in **Settings → Printers & scanners → printer → Manage → Printing preferences** (affects only your Windows account). Images request colour on their own job, which overrides that default — confirmed with Windows' generic network-printer driver (Microsoft IPP Class Driver). **Some manufacturer drivers (e.g. FUJIFILM) ignore the request** and print images in black and white, because their own colour setting decides. Fix: double-click `Setup-ImageColour.cmd` once on that PC, choose Colour in the printer's window (e.g. *Output Color: Color*) and click OK. The settings are saved per user and printer in `%LOCALAPPDATA%\BulkPrint\` and used for image jobs only; documents keep the black-and-white default. Run it again after a driver update or a printer change. The log's `IMAGES` line shows the printer, driver, colour request and whether a saved profile was used.
 - **Images: landscape photos print smaller** than portrait ones on the default portrait page, because photos are never rotated to fit.
 - **Very large selections** may exceed the Windows command-line length limit for Send To. Not measured.
 - **Work PCs:** if the window flashes and closes, a Group Policy execution policy is probably blocking scripts. `-ExecutionPolicy Bypass` does not override that; IT has to allow it.
@@ -96,6 +97,8 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - Found in testing: `[Math]::Min(1, x)` picks the whole-number version of `Min` when the first argument is `1`, rounding the scale to 0 or 1, so JPEGs shrank to 1x1 pixel and printed blank. Fixed by writing `1.0`.
 
 **Image follow-up (15 Oct 2026):** image pages switched to portrait by default (Ferry), set by `$imagePageLandscape` at the top of the script; preview checked. Each image job now logs an `IMAGES` line (printer, driver, colour support, colour requested). Colour test: with this PC's printer preference set to black and white, an image page still printed in colour (IPP class driver), so documents can default to black and white while images print in colour. On another PC a manufacturer driver printed images in black and white — not yet solved.
+
+**Colour profile for manufacturer drivers (15 Oct 2026):** on a PC with `FF Apeos C4570 PCL 6` (FUJIFILM), images printed black and white although colour was requested — the driver's private "Output Color" setting overrides the standard request. `Setup-ImageColour.cmd` now saves the printer's full settings (DEVMODE, including the driver's private section) from its own Printing Preferences window; image jobs load them with `SetHdevmode`, then apply the layout. Tested without paper: a profile captured here (3,844 bytes, 3,624 driver-private) reached the job byte for byte and set its colour; no profile → standard request as before; damaged profile → warning and fallback. The dialog step and the FUJIFILM result are tested on the other PC.
 
 ### Before 15 Oct 2026
 
