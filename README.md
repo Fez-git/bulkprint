@@ -7,7 +7,8 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 | File | Purpose |
 |---|---|
 | `Bulk-Print.ps1` | The print script. Run by the Send To shortcut. |
-| `Install-SendTo.cmd` | Adds **Send to → Bulk Print** to the right-click menu for the current user. No admin rights needed. |
+| `Install-SendTo.cmd` | Double-click to install or update. Runs `Install-SendTo.ps1`. |
+| `Install-SendTo.ps1` | Downloads the latest `Bulk-Print.ps1` from GitHub, then adds **Send to → Bulk Print** to the right-click menu for the current user. No admin rights needed. |
 | `Uninstall-SendTo.cmd` | Removes the Send To shortcut. |
 | `Print-Email.ps1` | Opens a `.eml` in Outlook and shows the print dialog. Not wired to any installer. |
 
@@ -25,10 +26,15 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
    - With git: `git clone https://github.com/Fez-git/bulkprint.git C:\Tools\BulkPrint`
 2. ZIP download only — clear the "downloaded from the internet" mark:
    `Get-ChildItem C:\Tools\BulkPrint | Unblock-File`
-3. Double-click `Install-SendTo.cmd`. It should say **Installed: Send to -> Bulk Print**.
+3. Double-click `Install-SendTo.cmd`. It downloads the latest `Bulk-Print.ps1`, then should say **Installed: Send to -> Bulk Print**.
 4. Test on a folder holding one small file: right-click the folder (Windows 11: **Show more options**) → **Send to → Bulk Print**.
 
-**Update:** `git -C C:\Tools\BulkPrint pull`, or download the ZIP again over the old files. Reinstall only if the folder moved.
+**Update:** double-click `Install-SendTo.cmd` again. It fetches the latest `Bulk-Print.ps1` from GitHub and keeps the previous copy as `Bulk-Print.ps1.bak`. To roll back, delete `Bulk-Print.ps1` and rename the `.bak`.
+
+- The download is checked before it replaces anything: it must be complete, valid PowerShell and actually be `Bulk-Print.ps1`. If it fails any check, or the PC is offline, the existing copy is kept.
+- Only `Bulk-Print.ps1` is updated. If the installer or uninstaller changes, download the ZIP again.
+- Folder set up with `git clone`: the installer skips the download — run `git -C C:\Tools\BulkPrint pull` instead.
+- Run the installer again if the folder moved.
 
 **Uninstall:** double-click `Uninstall-SendTo.cmd`, then delete the folder.
 
@@ -37,7 +43,7 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - Prints `.doc .docx .xls .xlsx .ppt .pptx .pdf` in each selected folder, in name order. Subfolders are not included.
 - If a folder contains ZIP files, asks once per folder whether to extract and print their supported contents.
 - Lists everything else as skipped. `.eml` and `.md` are logged but left out of the on-screen summary.
-- Writes a log, `Bulk-Print-<date-time>.log`, into each folder it prints.
+- Writes a log, `Bulk-Print-<date-time>.log`, into each folder it prints (skipped, with a warning, if the folder is read-only).
 - Ends with a summary: failed files in red, skipped files in yellow, each labelled with its folder.
 
 ## Known limitations
@@ -46,7 +52,7 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - **Extracted ZIP contents are deleted when you press Enter at the end.** Wait until PDFs from ZIPs have printed first.
 - **Password-protected files are not printed** — they are listed as skipped or failed. Print them by hand.
 - **Office can still hang on an unexpected dialog** (a first-run or licence prompt, for example) because it runs hidden. If the window sits there doing nothing, end `WINWORD`, `EXCEL` or `POWERPNT` in Task Manager.
-- **Read-only folders** (some network shares) cannot hold the log, so they are reported as failed and nothing in them is printed. Other selected folders still run.
+- **Read-only folders** (some network shares) cannot hold the log. The script prints them anyway, with no log, and shows a yellow warning when it starts that folder and again in the end summary.
 - **Very large selections** may exceed the Windows command-line length limit for Send To. Not measured.
 - **Work PCs:** if the window flashes and closes, a Group Policy execution policy is probably blocking scripts. `-ExecutionPolicy Bypass` does not override that; IT has to allow it.
 
@@ -63,10 +69,13 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 | 4 | Failed prints went only to the log. The summary could show green "No files were skipped" when every file had failed. | Failures are collected and shown in red in the summary. |
 | 5 | PowerPoint runs once per user, so the script attached to the user's open PowerPoint and `Quit()` closed it, with their presentations. | If PowerPoint was already running, the script closes only its own presentations and leaves PowerPoint open. |
 | 6 | A password-protected file opened a password box in the hidden Office window; the script hung forever. | Encrypted `.docx/.xlsx/.pptx` are detected from the file header (`D0 CF 11 E0` instead of `PK`) and skipped without opening Office. `.doc/.xls` are opened with a dummy password and `.ppt` with `file::password::`, so Office raises an error instead of prompting. |
+| 8 | A read-only folder could not hold the log: the script stopped that folder, so nothing in it printed. | Prints the folder without a log. Yellow warning when the folder starts and in the end summary. Tested on a folder with file creation denied: warning shown, folder processed, no log left behind, the other folder still logged normally. |
 
 **How fixes 5 and 6 were tested** (with `PrintOut` removed, so nothing printed): the script's own `Print-OfficeFile` ran against a protected and an unprotected copy of each of the six formats. All six protected files were skipped or failed without hanging; all six unprotected files opened. With a user presentation open in PowerPoint, it was still open after the script ran. Fixes 1–4 and multi-folder were tested with a dry run on folders holding no printable files. Actual print output has not been tested.
 
 **Gotcha found in testing:** passing a dummy `WriteResPassword` to Excel's `Workbooks.Open` makes every *unprotected* workbook fail to open. It is left as `[Type]::Missing`.
+
+**Installer self-update (15 Oct 2026):** `Install-SendTo.cmd` now downloads the latest `Bulk-Print.ps1` before installing. Tested: cut-off download and wrong file both rejected with the local script kept; newer version replaces it with a `.bak`; repeat run reports "already the latest"; git clone skips the download; no temp files left behind. Needs the repo to be public — a private repo returns 404 without login.
 
 ### Before 15 Oct 2026
 
