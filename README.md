@@ -85,7 +85,7 @@ MIT, see `LICENSE`.
 - MIT licence added.
 - Tested before packaging, with real prints: a `.docx`, a `.pptx` and a PDF inside a ZIP, one page each, all completed in the printer queue; no Word or PowerPoint left running; the extracted ZIP folder deleted after the final Enter.
 - Tested without paper, as a new user (extracted ZIP, redirected `APPDATA`): install, shortcut, the PC check, and the update logic against stand-in releases (same version, newer, older, wrong file).
-- **Not yet tested: a download from a real release.** Windows PowerShell 5.1 was confirmed against another project's `releases/latest/download` link, but GitHub drops the connection for a repo that has no releases at all, so the first real check is after publishing.
+- Tested against the published `v1.0.0` release: the `releases/latest/download` links return the exact files built; the installer from the downloaded ZIP reports "already the latest version 1.0.0"; a stale 0.9.9 copy is updated to 1.0.0 through Windows PowerShell 5.1. (Before the first release existed, GitHub dropped the connection instead of answering 404, so a repo with no releases shows "Could not download" and keeps the local copy.)
 
 ### 15 Oct 2026 — review fixes
 
