@@ -7,9 +7,12 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 | File | Purpose |
 |---|---|
 | `Bulk-Print.ps1` | The print script. Run by the Send To shortcut. |
-| `Install-SendTo.cmd` | Double-click to install or update. Runs `Install-SendTo.ps1`. |
-| `Install-SendTo.ps1` | Downloads the latest `Bulk-Print.ps1` from GitHub, then adds **Send to → Bulk Print** to the right-click menu for the current user. No admin rights needed. |
+| `Install-SendTo.cmd` | For a git clone: double-click to install or update. Runs `Install-SendTo.ps1`. (The release ZIP has its own `Install.cmd` that does the same.) |
+| `Install-SendTo.ps1` | Downloads the latest release of `Bulk-Print.ps1`, adds **Send to → Bulk Print** to the right-click menu for the current user (no admin rights), reports what the PC has (Office, classic Outlook, printer, PDF program) and offers the colour setup. |
 | `Uninstall-SendTo.cmd` | Removes the Send To shortcut. |
+| `build-release.ps1` | Maintainers: builds `dist\BulkPrint.zip` and `dist\Bulk-Print.ps1` for a release. |
+| `release/README.txt` | The quick-start text shipped inside the ZIP. |
+| `LICENSE` | MIT. |
 | `Setup-ImageColour.cmd` | One-time per PC, only if images print in black and white: opens the printer's own settings window; choose Colour and click OK. Saved for image jobs only. |
 
 ## Requirements
@@ -22,22 +25,30 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 
 ## Install
 
-1. Put the files in a permanent folder, e.g. `C:\Tools\BulkPrint`. The shortcut stores this path, so moving the folder later breaks it.
-   - Without git: on GitHub, **Code → Download ZIP**, then extract.
-   - With git: `git clone https://github.com/Fez-git/bulkprint.git C:\Tools\BulkPrint`
-2. ZIP download only — clear the "downloaded from the internet" mark:
-   `Get-ChildItem C:\Tools\BulkPrint | Unblock-File`
-3. Double-click `Install-SendTo.cmd`. It downloads the latest `Bulk-Print.ps1`, then should say **Installed: Send to -> Bulk Print**.
-4. Test on a folder holding one small file: right-click the folder (Windows 11: **Show more options**) → **Send to → Bulk Print**.
+**From the release (recommended):**
+1. Download `BulkPrint.zip` from the [latest release](https://github.com/Fez-git/bulkprint/releases/latest).
+2. Right-click the ZIP → **Properties** → tick **Unblock** → OK (stops Windows asking about every file), then extract it to a **permanent** folder such as `C:\Tools\BulkPrint`. The right-click shortcut points to that folder: if it is moved or deleted, run `Install.cmd` again from the new place.
+3. Double-click `Install.cmd`. Windows may say it could not verify the publisher (the files are plain text and are not signed with a paid certificate): click Run.
+4. Read the short check at the end (Office, classic Outlook for emails, default printer, PDF program). It reports only; nothing blocks the install. It then offers the colour setup (see Known limitations).
+5. Test on a folder holding one small file: right-click the folder (Windows 11: **Show more options**) → **Send to → Bulk Print**.
 
-**Update:** double-click `Install-SendTo.cmd` again. It fetches the latest `Bulk-Print.ps1` from GitHub and keeps the previous copy as `Bulk-Print.ps1.bak`. To roll back, delete `Bulk-Print.ps1` and rename the `.bak`.
+**From source (developers):** `git clone https://github.com/Fez-git/bulkprint.git C:\Tools\BulkPrint`, then double-click `Install-SendTo.cmd`. A clone skips the download; update it with `git pull`.
 
-- The download is checked before it replaces anything: it must be complete, valid PowerShell and actually be `Bulk-Print.ps1`. If it fails any check, or the PC is offline, the existing copy is kept.
-- Only `Bulk-Print.ps1` is updated. If the installer or uninstaller changes, download the ZIP again.
-- Folder set up with `git clone`: the installer skips the download — run `git -C C:\Tools\BulkPrint pull` instead.
-- Run the installer again if the folder moved.
+**Update:** double-click `Install.cmd` again. It downloads `Bulk-Print.ps1` from the latest release, shows `old -> new` version numbers and keeps the previous copy as `Bulk-Print.ps1.bak` (to roll back, delete `Bulk-Print.ps1` and rename the `.bak`).
+- The download is checked before it replaces anything: it must be complete, valid PowerShell and actually be `Bulk-Print.ps1`. If it fails a check, or the PC is offline, the existing copy is kept. An installed copy newer than the release is never replaced.
+- Only `Bulk-Print.ps1` is updated. If the installer, uninstaller or setup file changes, download the new ZIP.
 
-**Uninstall:** double-click `Uninstall-SendTo.cmd`, then delete the folder.
+**Uninstall:** double-click `files\Uninstall-SendTo.cmd` (`Uninstall-SendTo.cmd` in a clone), then delete the folder.
+
+## Releasing (maintainers)
+
+1. Change `$BulkPrintVersion` at the top of `Bulk-Print.ps1`.
+2. Run `powershell -NoProfile -ExecutionPolicy Bypass -File build-release.ps1`. It writes `dist\BulkPrint.zip` and `dist\Bulk-Print.ps1`, which is byte-identical to the copy inside the ZIP.
+3. Commit, tag `vX.Y.Z`, then `gh release create vX.Y.Z dist/BulkPrint.zip dist/Bulk-Print.ps1 --notes-file <notes>`. **Keep both asset names**: the installer downloads `releases/latest/download/Bulk-Print.ps1`.
+
+## Licence
+
+MIT, see `LICENSE`.
 
 ## What it does
 
@@ -59,12 +70,22 @@ Right-click one or more folders in Windows Explorer and print every Word, Excel,
 - **Emails print in full** — there is no page limit; Outlook's scripting interface has no page range. Attachments inside an `.eml` are not printed (Outlook's default).
 - **An email is matched to its Outlook window by subject.** If Outlook shows the email under a different subject than the file's header (unusual encodings), it fails after 60 s rather than risk printing the wrong email.
 - **Images: HEIC** (iPhone's default format) **is not supported** and is listed as skipped. Set the iPhone to "Most Compatible" (JPEG) or convert first.
-- **Colour: documents follow the printer, images ask for colour.** Word, Excel, PowerPoint, PDFs and emails print with the printer's default, which the script cannot change for those programs. For black-and-white documents, set the printer to black and white in **Settings → Printers & scanners → printer → Manage → Printing preferences** (affects only your Windows account). Images request colour on their own job, which overrides that default — confirmed with Windows' generic network-printer driver (Microsoft IPP Class Driver). **Some manufacturer drivers (e.g. FUJIFILM) ignore the request** and print images in black and white, because their own colour setting decides. Fix: double-click `Setup-ImageColour.cmd` once on that PC, choose Colour in the printer's window (e.g. *Output Color: Color*) and click OK. The settings are saved per user and printer in `%LOCALAPPDATA%\BulkPrint\` and used for image jobs only; documents keep the black-and-white default. Run it again after a driver update or a printer change. The log's `IMAGES` line shows the printer, driver, colour request and whether a saved profile was used.
+- **Colour: documents follow the printer, images ask for colour.** Word, Excel, PowerPoint, PDFs and emails print with the printer's default, which the script cannot change for those programs. For black-and-white documents, set the printer to black and white in **Settings → Printers & scanners → printer → Manage → Printing preferences** (affects only your Windows account). Images request colour on their own job, which overrides that default — confirmed with Windows' generic network-printer driver (Microsoft IPP Class Driver). **Some manufacturer drivers (e.g. FUJIFILM) ignore the request** and print images in black and white, because their own colour setting decides. Fix: double-click `Setup-ImageColour.cmd` (in the `files` folder of the ZIP) once on that PC, choose Colour in the printer's window (e.g. *Output Color: Color*) and click OK. The settings are saved per user and printer in `%LOCALAPPDATA%\BulkPrint\` and used for image jobs only; documents keep the black-and-white default. Run it again after a driver update or a printer change. The log's `IMAGES` line shows the printer, driver, colour request and whether a saved profile was used.
 - **Images: landscape photos print smaller** than portrait ones on the default portrait page, because photos are never rotated to fit.
 - **Very large selections** may exceed the Windows command-line length limit for Send To. Not measured.
 - **Work PCs:** if the window flashes and closes, a Group Policy execution policy is probably blocking scripts. `-ExecutionPolicy Bypass` does not override that; IT has to allow it.
 
 ## Change history
+
+### 16 Oct 2026 — packaging for release 1.0.0
+
+- Version number (`$BulkPrintVersion`) in the script; the log's START line shows it.
+- `Install-SendTo.ps1` updates from the latest GitHub release instead of `main`, so unreleased commits never reach users. Messages show `old -> new` versions; a newer local copy is never replaced; the Send To folder is created if missing; downloaded files are unblocked; a report-only check of Office, classic Outlook, printer and PDF program runs after the install; the colour setup is offered at the end.
+- `build-release.ps1` builds the ZIP with forward-slash entry names (Compress-Archive in Windows PowerShell 5.1 writes backslashes).
+- MIT licence added.
+- Tested before packaging, with real prints: a `.docx`, a `.pptx` and a PDF inside a ZIP, one page each, all completed in the printer queue; no Word or PowerPoint left running; the extracted ZIP folder deleted after the final Enter.
+- Tested without paper, as a new user (extracted ZIP, redirected `APPDATA`): install, shortcut, the PC check, and the update logic against stand-in releases (same version, newer, older, wrong file).
+- **Not yet tested: a download from a real release.** Windows PowerShell 5.1 was confirmed against another project's `releases/latest/download` link, but GitHub drops the connection for a repo that has no releases at all, so the first real check is after publishing.
 
 ### 15 Oct 2026 — review fixes
 

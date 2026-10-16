@@ -6,6 +6,8 @@ param(
     [string[]]$FolderPath
 )
 
+# Read by Install-SendTo.ps1 (the pattern is `$BulkPrintVersion = 'x.y.z'`): keep this line exactly in that form.
+$BulkPrintVersion = '1.0.0'
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 # Images are not printed one by one: each folder's images go into one job, 4 per page.
@@ -614,7 +616,7 @@ function Invoke-BulkPrintFolder {
         [void]$script:NoLogFolders.Add($folder.FullName)
         Write-Host 'WARNING: this folder is read-only, so no log was created. Printing anyway.' -ForegroundColor Yellow
     }
-    Write-Log "START    Folder: $($folder.FullName)"
+    Write-Log "START    Folder: $($folder.FullName)  (Bulk Print $BulkPrintVersion)"
     Write-Log 'PRINTER  Windows default printer'
 
     # Images (also from ZIPs) are collected and printed together at the end of the folder.
